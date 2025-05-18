@@ -3,9 +3,14 @@
 
 name: Issue → PR (Expense)
 
+# --------------------------------------------------------------------
+# Trigger when an Issue is *opened* OR when a label is *added*.
+#   - Some issue forms add the label _after_ creation, so we listen to
+#     both events to be safe.
+# --------------------------------------------------------------------
 on:
   issues:
-    types: [opened]
+    types: [opened, labeled]
 
 permissions:
   contents: write
@@ -13,13 +18,22 @@ permissions:
 
 jobs:
   create-pr:
-    # Quote the whole expression so YAML doesn't treat "*" as an anchor
-    if: "contains(github.event.issue.labels.*.name, 'expense')"
+    # Run when the issue already contains the label (opened) OR the label
+    # has just been added (labeled).
+    if: >-
+      (github.event.action == 'opened' &&
+       contains(github.event.issue.labels.*.name, 'expense')) ||
+      (github.event.action == 'labeled' &&
+       github.event.label.name == 'expense')
+
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Debug → show labels in the event payload
+        run: echo "event.labels = ${{ toJson(github.event.issue.labels) }}"
 
       - name: Parse Issue and generate expense file
         id: generate
@@ -30,7 +44,7 @@ jobs:
           ISSUE_NUMBER="${{ github.event.issue.number }}"
           ISSUE_BODY="${{ github.event.issue.body }}"
 
-          # Extract first date-like string (YYYY-MM-DD)
+          # Extract first date‑like string (YYYY‑MM‑DD)
           DATE=$(grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$ISSUE_BODY" | head -n1)
           # Extract applicant: second token on the line beginning with 申請者
           APPLICANT=$(grep -i '^申請者' <<<"$ISSUE_BODY" | awk '{print $2}')
@@ -51,7 +65,6 @@ jobs:
           issue: ISSUE_PLACEHOLDER
           raw: |
           EOF
-
           # Replace placeholders
           sed -i "s/APPLICANT_PLACEHOLDER/$APPLICANT/" "$FILE"
           sed -i "s/DATE_PLACEHOLDER/$DATE/" "$FILE"
