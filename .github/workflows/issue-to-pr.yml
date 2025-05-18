@@ -1,0 +1,82 @@
+# GitHub Actions workflow: convert an "expense" Issue into a Pull Request
+# Place this file at .github/workflows/issue-to-pr.yml
+
+name: Issue → PR (Expense)
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write      # allow pushing a new branch
+  pull-requests: write # allow opening a PR
+
+jobs:
+  create_pr:
+    if: contains(github.event.issue.labels.*.name, 'expense')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse Issue & generate expense file
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+
+          # ──────────────────────────────────────────────────────────────
+          # Extract metadata from the issue body
+          #   * first YYYY‑MM‑DD  → DATE
+          #   * line that starts with "申請者" → APPLICANT
+          # ──────────────────────────────────────────────────────────────
+          DATE=$(grep -Eo '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$ISSUE_BODY" | head -n1)
+          APPLICANT=$(grep -i '^申請者' <<<"$ISSUE_BODY" | awk '{print $2}')
+
+          if [[ -z "$DATE" || -z "$APPLICANT" ]]; then
+            echo "⚠️  DATE or APPLICANT not found in the issue body. Aborting." >&2
+            exit 1
+          fi
+
+          DIR="expenses/${DATE:0:4}/${DATE:5:2}"
+          mkdir -p "$DIR"
+          FILE="$DIR/${DATE}-${APPLICANT}.yml"
+
+          # ── Build YAML stub with a quoted here‑document ───────────────
+          cat <<'EOF' >"$FILE"
+applicant: APPLICANT_PLACEHOLDER
+date: DATE_PLACEHOLDER
+issue: ISSUE_PLACEHOLDER
+raw: |
+EOF
+
+          # Substitute placeholders so that we can safely quote the heredoc
+          sed -i "s/APPLICANT_PLACEHOLDER/$APPLICANT/" "$FILE"
+          sed -i "s/DATE_PLACEHOLDER/$DATE/" "$FILE"
+          sed -i "s/ISSUE_PLACEHOLDER/$ISSUE_NUMBER/" "$FILE"
+
+          # Append the original issue body, indented two spaces
+          echo "$ISSUE_BODY" | sed 's/^/  /' >> "$FILE"
+
+          # Expose the relative file path as an output for later steps
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create Pull Request from new expense file
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: expense/${{ github.event.issue.number }}
+          commit-message: |
+            chore(expense): add ${{ steps.generate.outputs.file }} (closes #${{ github.event.issue.number }})
+          title: "Expense #${{ github.event.issue.number }} – ${{ steps.generate.outputs.file }}"
+          body: |
+            This PR was automatically generated from Issue #${{ github.event.issue.number }}.  
+            **Expense file**: `${{ steps.generate.outputs.file }}`
+            
+            Closes #${{ github.event.issue.number }}
+          labels: |
+            expense
+            pending-review
